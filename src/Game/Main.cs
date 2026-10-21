@@ -58,6 +58,7 @@ public partial class Main : Node3D
 	private bool _demo;
 	private bool _quitAfterDemo;
 	private string? _art;
+	private bool _hands;
 
 	public override void _Ready()
 	{
@@ -70,9 +71,16 @@ public partial class Main : Node3D
 			_ = ArtCheck.Run(this, _art);
 			return;
 		}
+		if (_hands)
+		{
+			_ = ShowHands();
+			return;
+		}
 		AudioServer.SetBusMute(0, _settings.Muted);
 		_ = Start();
 	}
+
+	private async Task ShowHands() => HandCheck.Build(this, await CardLooks.Create(this, CardFront.Classic, CardBack.Crimson));
 
 	private async Task Start()
 	{
@@ -123,6 +131,15 @@ public partial class Main : Node3D
 			"Once Go Fish is on Google Play, this opens your phone's share menu with a link to the game, so a friend can get it and play you.",
 			("OK", true, null));
 
+		// Pairs (what most families play) or books of four (the rule-book version); from the next deal.
+		_hud.AddChoice("Lay down", new[] { "Pairs", "Books of four" }, SetSize == 4 ? 1 : 0, choice =>
+		{
+			_settings.Extra["sets"] = choice == 1 ? "books" : "pairs";
+			_settings.Save();
+			if (_game == null || _game.BooksMade == 0)
+				_ = NewRound();
+		});
+
 		_styleMenu = new CardStyleMenu(theme, _looks.Back, _looks.Front);
 		_styleMenu.BackChosen += back => { _ = _looks.SetBack(this, back); Save("back", back); };
 		_styleMenu.FrontChosen += front => { _ = _looks.SetFront(this, front); Save("front", front); };
@@ -132,6 +149,9 @@ public partial class Main : Node3D
 		_hud.ApplyDevFlags();
 		await NewRound();
 	}
+
+	/// <summary>2 to play with pairs (the default), 4 for books of four (chosen in Settings).</summary>
+	private int SetSize => _settings.Extra.TryGetValue("sets", out var sets) && sets == "books" ? 4 : 2;
 
 	private T Saved<T>(string key, T fallback) where T : struct, Enum =>
 		_settings.Extra.TryGetValue(key, out var text) && Enum.TryParse<T>(text, out var value) ? value : fallback;
@@ -157,7 +177,7 @@ public partial class Main : Node3D
 			_helpers[p] = new GlassHand(mirrored: true, tint) { Grip = 0.35f };
 			AddChild(_helpers[p]);
 			var pivot = _table.FanPivot[p];
-			var rest = pivot.Origin + pivot.Basis * new Vector3(p == 0 ? 0.95f : -0.95f, -0.25f, -0.05f);
+			var rest = pivot.Origin + pivot.Basis * new Vector3(p == 0 ? 1.4f : -1.3f, p == 0 ? -0.6f : -0.35f, 0.05f);
 			_helperRest[p] = new Transform3D(pivot.Basis * new Basis(Vector3.Back, p == 0 ? 0.35f : -0.35f), rest);
 			_helpers[p].GlobalTransform = _helperRest[p];
 		}
@@ -250,7 +270,7 @@ public partial class Main : Node3D
 			deck[51 - i].Card = order[i];
 			_nodes[order[i]] = deck[51 - i];
 		}
-		_game = new GoFishGame(order, _first);
+		_game = new GoFishGame(order, _first, SetSize);
 		_ai = new GoFishAi(1, _settings.Difficulty, _random);
 		_autopilot = _demo ? new GoFishAi(0, Difficulty.Medium, _random) : null;
 
@@ -281,7 +301,8 @@ public partial class Main : Node3D
 		if (round != _round)
 			return;
 		_hud.SetRestartVisible(true);
-		await Play(new List<GoFishEvent> { new TurnTo(_game.Current) });
+		// Anything dealt that already makes a set goes straight down, then the first turn starts.
+		await Play(_game.Opening());
 	}
 
 	/// <summary>Acts out what just happened, then hands over to whoever moves next.</summary>
@@ -399,15 +420,21 @@ public partial class Main : Node3D
 	private async Task LayBook(Book book)
 	{
 		var nodes = book.Cards.Select(c => _nodes[c]).ToList();
-		int k = _books[book.Player].Count;
+		var game = _game!;
+		int k = _books[book.Player].Count / game.SetSize; // sets laid so far
 		float side = book.Player == 0 ? 1 : -1;
-		var at = _table.Winnings[book.Player] + new Vector3(side * (k % 3) * 0.36f, 0, side * (k / 3) * -0.42f);
+		// Books of four: a little grid, three across. Pairs (up to 26 of them): one loose pile
+		// that grows, each pair a touch askew, so the newest pair is always on top.
+		var at = game.SetSize == 4
+			? _table.Winnings[book.Player] + new Vector3(side * (k % 3) * 0.36f, 0, side * (k / 3) * -0.42f)
+			: _table.Winnings[book.Player] + new Vector3(side * (k % 3) * 0.05f, 0, side * (k % 2) * -0.04f);
+		float yaw = game.SetSize == 4 ? side * 0.1f : side * 0.1f + ((float)_random.NextDouble() - 0.5f) * 0.3f;
 		Tween? last = null;
 		for (int i = 0; i < nodes.Count; i++)
 		{
 			var node = nodes[i];
 			_fans[book.Player].Remove(node);
-			var target = new Transform3D(Card3D.FaceUp(side * 0.1f), at + new Vector3(i * 0.05f * side, 0.004f * (i + 1) + 0.001f * k, 0));
+			var target = new Transform3D(Card3D.FaceUp(yaw), at + new Vector3(i * (game.SetSize == 4 ? 0.05f : 0.16f) * side, 0.004f * (i + 1) + 0.0085f * k, 0));
 			last = CardMotion.Fly(node, target, 0.45f, lift: 0.4f, delay: i * 0.07f, landed: () => _sounds.PlaySlap(node.GlobalPosition));
 			_books[book.Player].Add(node);
 		}
@@ -415,19 +442,28 @@ public partial class Main : Node3D
 		Sparkle.Burst(this, at + Vector3.Up * 0.2f);
 		_fans[book.Player].Settle();
 		string ranks = Card.RankName(book.Rank, plural: true).ToLowerInvariant();
-		_hud.SetStatus(book.Player == 0 ? $"A book of {ranks}!" : $"The computer makes a book of {ranks}.", Bright);
+		string set = game.SetSize == 4 ? "book" : "pair";
+		_hud.SetStatus(book.Player == 0 ? $"A {set} of {ranks}!" : $"The computer lays down a {set} of {ranks}.", Bright);
 		SetScore();
 		await Pause(0.8f);
 	}
 
 	private void Finish(GameOver over)
 	{
-		int winner = over.Books[0] > over.Books[1] ? 0 : 1;
-		_wins.Win(first: winner == 0);
-		_hud.SetStatus(winner == 0 ? $"You win, {over.Books[0]} books to {over.Books[1]}!" : $"The computer wins, {over.Books[1]} books to {over.Books[0]}.", Bright);
-		var meshes = _books[winner].SelectMany(n => n.Meshes).ToList();
-		if (meshes.Count > 0)
-			_fire = Flames.SetAlight(this, _table.Winnings[winner], meshes, radius: 0.5f, size: 1.2f, withLight: true);
+		string sets = _game!.SetSize == 4 ? "books" : "pairs";
+		if (over.Books[0] == over.Books[1])
+		{
+			_hud.SetStatus($"A tie: {over.Books[0]} {sets} each!", Bright);
+		}
+		else
+		{
+			int winner = over.Books[0] > over.Books[1] ? 0 : 1;
+			_wins.Win(first: winner == 0);
+			_hud.SetStatus(winner == 0 ? $"You win, {over.Books[0]} {sets} to {over.Books[1]}!" : $"The computer wins, {over.Books[1]} {sets} to {over.Books[0]}.", Bright);
+			var meshes = _books[winner].SelectMany(n => n.Meshes).ToList();
+			if (meshes.Count > 0)
+				_fire = Flames.SetAlight(this, _table.Winnings[winner], meshes, radius: 0.5f, size: 1.2f, withLight: true);
+		}
 		_hud.SetRestartVisible(false);
 		_hud.SetNewGameVisible(true);
 		_first = 1 - _first;
@@ -459,7 +495,8 @@ public partial class Main : Node3D
 	{
 		var game = _game;
 		int mine = game?.Books(0).Count ?? 0, theirs = game?.Books(1).Count ?? 0;
-		_hud.SetScore($"Books: you {mine} · {theirs} computer   ·   Wins {_wins.First}–{_wins.Second}");
+		string sets = SetSize == 4 ? "Books" : "Pairs";
+		_hud.SetScore($"{sets}: you {mine} · {theirs} computer   ·   Wins {_wins.First}–{_wins.Second}");
 	}
 
 	// ------------------------------------------------------------------ Input
@@ -558,6 +595,9 @@ public partial class Main : Node3D
 					break;
 				case "--art":
 					_art = value;
+					break;
+				case "--hands":
+					_hands = true;
 					break;
 			}
 		}

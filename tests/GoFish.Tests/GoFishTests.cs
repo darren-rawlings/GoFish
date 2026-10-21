@@ -19,26 +19,84 @@ public class GoFishTests
 
 	private static Card C(int rank, Suit suit) => new(rank, suit);
 
+	/// <summary>A dealt and opened game.</summary>
+	private static GoFishGame Open(IReadOnlyList<Card> deck, int setSize, out List<GoFishEvent> opening)
+	{
+		var game = new GoFishGame(deck, setSize: setSize);
+		opening = game.Opening();
+		return game;
+	}
+
+	private static GoFishGame Open(IReadOnlyList<Card> deck, int setSize) => Open(deck, setSize, out _);
+
+	// ------------------------------------------------------------------ Both versions
+
 	[Fact]
 	public void SevenCardsEachAreDealtAlternatelyAndTheRestMakeThePond()
 	{
 		var deck = Deck.Shuffled(new Random(3));
-		var game = new GoFishGame(deck);
+		var game = new GoFishGame(deck, setSize: 4);
 		Assert.Equal(7, game.Hand(0).Count);
 		Assert.Equal(7, game.Hand(1).Count);
 		Assert.Equal(38, game.Pond.Count);
 		Assert.Equal(deck[0], game.Hand(0)[0]);
 		Assert.Equal(deck[1], game.Hand(1)[0]);
 		Assert.Equal(deck.Take(14), game.Dealt);
-		Assert.Equal(Phase.Asking, game.Phase);
 	}
+
+	[Fact]
+	public void NothingHappensBeforeTheOpening()
+	{
+		var game = new GoFishGame(Deck.Standard());
+		Assert.Throws<InvalidOperationException>(() => game.Ask(Card.Ace));
+		game.Opening();
+		Assert.Throws<InvalidOperationException>(() => game.Opening());
+	}
+
+	[Fact]
+	public void YouCanOnlyAskForWhatYouHold()
+	{
+		var game = Open(Deck.Standard(), 4);
+		Assert.Throws<InvalidOperationException>(() => game.Ask(2));
+		Assert.Throws<InvalidOperationException>(() => game.Fish(0));
+	}
+
+	[Theory]
+	[InlineData(2, 1)]
+	[InlineData(2, 2)]
+	[InlineData(2, 3)]
+	[InlineData(4, 4)]
+	[InlineData(4, 5)]
+	public void WholeGamesEndWithEveryCardInASet(int setSize, int seed)
+	{
+		var random = new Random(seed);
+		var game = new GoFishGame(random, setSize: setSize);
+		var ais = new[] { new GoFishAi(0, Difficulty.Medium, random), new GoFishAi(1, Difficulty.Hard, random) };
+		var opening = game.Opening();
+		foreach (var ai in ais)
+			ai.Watch(opening);
+		int moves = 0;
+		while (!game.IsOver && moves++ < 2000)
+		{
+			var ai = ais[game.Current];
+			var events = game.Phase == Phase.Fishing ? game.Fish(ai.ChoosePondCard(game)) : game.Ask(ai.ChooseRank(game));
+			foreach (var watcher in ais)
+				watcher.Watch(events);
+			int cards = game.Hand(0).Count + game.Hand(1).Count + game.Pond.Count + game.BooksMade * setSize;
+			Assert.Equal(52, cards);
+		}
+		Assert.True(game.IsOver);
+		Assert.Equal(52 / setSize, game.BooksMade);
+	}
+
+	// ------------------------------------------------------------------ Books of four
 
 	[Fact]
 	public void AskingForARankTheOtherHoldsGetsAllOfThemAndYouGoAgain()
 	{
 		// Player 0: 7♣ 7♦ ...; player 1: 7♥ ...
 		var deck = DeckStarting(C(7, Suit.Clubs), C(7, Suit.Hearts), C(7, Suit.Diamonds), C(2, Suit.Hearts));
-		var game = new GoFishGame(deck);
+		var game = Open(deck, 4);
 		var events = game.Ask(7);
 		var gave = Assert.Single(events.OfType<Gave>());
 		Assert.Equal(1, gave.From);
@@ -52,14 +110,13 @@ public class GoFishTests
 	public void NoneMeansGoFishAndAWrongDrawPassesTheTurn()
 	{
 		var deck = Deck.Standard(); // player 0 gets A♣ 3♣ 5♣ 7♣ 9♣ J♣ K♣; player 1 2♣ 4♣ 6♣ 8♣ 10♣ Q♣ A♦
-		var game = new GoFishGame(deck);
+		var game = Open(deck, 4);
 		var events = game.Ask(3);
 		Assert.IsType<GoFishTold>(events[^1]);
 		Assert.Equal(Phase.Fishing, game.Phase);
 		// The pond starts at 2♦; draw it: not a three, so the turn passes.
 		var draw = game.Fish(0);
-		var drew = Assert.IsType<Drew>(draw[0]);
-		Assert.False(drew.Lucky);
+		Assert.False(((Drew)draw[0]).Lucky);
 		Assert.Equal(1, game.Current);
 		Assert.Equal(8, game.Hand(0).Count);
 	}
@@ -67,8 +124,7 @@ public class GoFishTests
 	[Fact]
 	public void DrawingTheRankYouAskedForMeansYouGoAgain()
 	{
-		var deck = Deck.Standard();
-		var game = new GoFishGame(deck);
+		var game = Open(Deck.Standard(), 4);
 		game.Ask(3);
 		var draw = game.Fish(game.Pond.ToList().IndexOf(C(3, Suit.Diamonds)));
 		Assert.True(((Drew)draw[0]).Lucky);
@@ -80,7 +136,7 @@ public class GoFishTests
 	{
 		// Player 0 holds three kings; player 1 holds the fourth.
 		var deck = DeckStarting(C(13, Suit.Clubs), C(13, Suit.Spades), C(13, Suit.Diamonds), C(2, Suit.Spades), C(13, Suit.Hearts));
-		var game = new GoFishGame(deck);
+		var game = Open(deck, 4);
 		var events = game.Ask(Card.King);
 		var book = Assert.Single(events.OfType<Book>());
 		Assert.Equal(Card.King, book.Rank);
@@ -90,49 +146,94 @@ public class GoFishTests
 	}
 
 	[Fact]
-	public void YouCanOnlyAskForWhatYouHold()
+	public void FourOfAKindDealtIsLaidDownAtTheOpening()
 	{
-		var game = new GoFishGame(Deck.Standard());
-		Assert.Throws<InvalidOperationException>(() => game.Ask(2));
-		Assert.Throws<InvalidOperationException>(() => game.Fish(0));
+		// Player 0 is dealt all four queens (cards 0, 2, 4, 6 of the deal).
+		var deck = DeckStarting(C(12, Suit.Clubs), C(2, Suit.Clubs), C(12, Suit.Diamonds), C(3, Suit.Clubs), C(12, Suit.Hearts), C(4, Suit.Clubs), C(12, Suit.Spades));
+		var game = Open(deck, 4, out var opening);
+		var book = Assert.Single(opening.OfType<Book>());
+		Assert.Equal(0, book.Player);
+		Assert.Equal(3, game.Hand(0).Count);
 	}
 
-	[Theory]
-	[InlineData(1)]
-	[InlineData(2)]
-	[InlineData(3)]
-	[InlineData(4)]
-	[InlineData(5)]
-	public void WholeGamesEndWithThirteenBooksAndEveryCardAccountedFor(int seed)
+	// ------------------------------------------------------------------ Pairs
+
+	[Fact]
+	public void PairsDealtAreLaidDownAtTheOpening()
 	{
-		var random = new Random(seed);
-		var game = new GoFishGame(random);
-		var ais = new[] { new GoFishAi(0, Difficulty.Medium, random), new GoFishAi(1, Difficulty.Hard, random) };
-		int moves = 0;
-		while (!game.IsOver && moves++ < 1000)
+		// Player 0: 5♣ 5♦ 9♣ ...; player 1: 8♣ 8♦ ...
+		var deck = DeckStarting(C(5, Suit.Clubs), C(8, Suit.Clubs), C(5, Suit.Diamonds), C(8, Suit.Diamonds), C(9, Suit.Clubs));
+		var game = Open(deck, 2, out var opening);
+		var pairs = opening.OfType<Book>().ToList();
+		Assert.Contains(pairs, p => p.Player == 0 && p.Rank == 5 && p.Cards.Count == 2);
+		Assert.Contains(pairs, p => p.Player == 1 && p.Rank == 8);
+		// No one keeps a pair in hand.
+		foreach (int p in new[] { 0, 1 })
+			Assert.All(game.Hand(p).GroupBy(c => c.Rank), g => Assert.Single(g));
+		Assert.IsType<TurnTo>(opening[^1]);
+	}
+
+	[Fact]
+	public void AskingWithPairsGetsTheMatchAndLaysThePairDown()
+	{
+		// Player 0 holds 6♣; player 1 holds 6♥.
+		var deck = DeckStarting(C(6, Suit.Clubs), C(6, Suit.Hearts));
+		var game = Open(deck, 2);
+		var events = game.Ask(6);
+		Assert.Single(events.OfType<Gave>());
+		var pair = Assert.Single(events.OfType<Book>());
+		Assert.Equal(2, pair.Cards.Count);
+		Assert.DoesNotContain(game.Hand(0), c => c.Rank == 6);
+		Assert.Equal(0, game.Current);
+	}
+
+	[Fact]
+	public void ThreeOfAKindWithPairsLaysOnePairAndKeepsOne()
+	{
+		var deck = DeckStarting(C(4, Suit.Clubs), C(2, Suit.Clubs), C(4, Suit.Diamonds), C(3, Suit.Clubs), C(4, Suit.Hearts));
+		var game = Open(deck, 2, out var opening);
+		Assert.Single(opening.OfType<Book>(), b => b.Player == 0 && b.Rank == 4);
+		Assert.Single(game.Hand(0), c => c.Rank == 4);
+	}
+
+	[Fact]
+	public void WithPairsATiedGameIsATie()
+	{
+		var random = new Random(11);
+		int ties = 0;
+		for (int n = 0; n < 200; n++)
 		{
-			var ai = ais[game.Current];
-			var events = game.Phase == Phase.Fishing ? game.Fish(ai.ChoosePondCard(game)) : game.Ask(ai.ChooseRank(game));
-			foreach (var watcher in ais)
-				watcher.Watch(events);
-			int cards = game.Hand(0).Count + game.Hand(1).Count + game.Pond.Count + game.BooksMade * 4;
-			Assert.Equal(52, cards);
+			var game = new GoFishGame(random, setSize: 2);
+			var ai = new GoFishAi(0, Difficulty.Easy, random);
+			game.Opening();
+			while (!game.IsOver)
+				_ = game.Phase == Phase.Fishing ? game.Fish(ai.ChoosePondCard(game)) : game.Ask(game.AskableRanks(game.Current)[0]);
+			if (game.Books(0).Count == game.Books(1).Count)
+			{
+				ties++;
+				Assert.Equal(-1, game.Winner);
+			}
+			else
+			{
+				Assert.InRange(game.Winner, 0, 1);
+			}
 		}
-		Assert.True(game.IsOver);
-		Assert.Equal(13, game.BooksMade);
-		Assert.InRange(game.Winner, 0, 1);
+		Assert.True(ties > 0, "13–13 should come up now and then");
 	}
 
 	[Fact]
 	public void HardBeatsEasyMoreOftenThanNot()
 	{
-		int hardWins = 0;
+		int hardWins = 0, decided = 0;
 		const int games = 1000;
 		for (int seed = 0; seed < games; seed++)
 		{
 			var random = new Random(seed);
-			var game = new GoFishGame(random, first: seed % 2);
+			var game = new GoFishGame(random, first: seed % 2, setSize: 4);
 			var ais = new[] { new GoFishAi(0, Difficulty.Easy, random), new GoFishAi(1, Difficulty.Hard, random) };
+			var opening = game.Opening();
+			foreach (var ai in ais)
+				ai.Watch(opening);
 			while (!game.IsOver)
 			{
 				var ai = ais[game.Current];
@@ -140,10 +241,12 @@ public class GoFishTests
 				foreach (var watcher in ais)
 					watcher.Watch(events);
 			}
+			if (game.Winner >= 0)
+				decided++;
 			if (game.Winner == 1)
 				hardWins++;
 		}
 		// Go Fish is mostly luck, so remembering the table is worth a modest, steady edge.
-		Assert.True(hardWins > games * 0.53, $"Hard won {hardWins} of {games}");
+		Assert.True(hardWins > decided * 0.53, $"Hard won {hardWins} of {decided}");
 	}
 }
