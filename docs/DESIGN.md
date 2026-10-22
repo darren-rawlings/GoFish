@@ -56,3 +56,7 @@ can get it and play you. Until the game is on Google Play, it explains that.
 Go Fish vs the computer with the full table: shuffle, deal, glass hands, books, styles, tutorial,
 Send, ads and the shop. **Later:** Play nearby; three or four players (Go Fish deals five each);
 tutorial clips recorded from the game; more front and back designs.
+
+## Changes from Darren's notes (2026-10-22)
+- Now on the shared CardGame base (talk log, place settings, speed, level lock, table cloths).
+- Whoever asks has deep blue hands, whoever is asked deep yellow; every question and answer is in the log.
