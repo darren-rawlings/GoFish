@@ -97,6 +97,6 @@ public sealed class GoFishAi
 		return best[_random.Next(best.Count)];
 	}
 
-	/// <summary>Which pond card to draw (the pond is face down, so any is as good as another).</summary>
-	public int ChoosePondCard(GoFishGame game) => _random.Next(game.Pond.Count);
+	/// <summary>Which card to draw: the top of the face-down stock.</summary>
+	public int ChoosePondCard(GoFishGame game) => 0;
 }

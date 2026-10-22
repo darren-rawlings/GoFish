@@ -15,9 +15,10 @@ using Renegade.Ui;
 namespace GoFish.Game;
 
 /// <summary>
-/// Go Fish against the computer, played with real-looking cards: the deck is riffled and dealt,
-/// glass hands pick up and fan the cards, and every ask, hand-over, draw and book is acted out.
-/// Tap a card in your fan to ask for its rank; after "Go fish!", tap a card in the pond.
+/// Go Fish against the computer, played with real-looking cards: the deck is shuffled and dealt,
+/// glass hands pick the cards up and fan them, and every ask, throw, draw and book is acted out
+/// with a pinch of thumb and finger. Tap a card in your fan to ask for its rank; after "Go fish!",
+/// tap the deck (or let Settings › Fish automatically do it).
 /// </summary>
 public partial class Main : Node3D
 {
@@ -26,6 +27,7 @@ public partial class Main : Node3D
 	private static readonly AdMobConfig AdUnits = AdMobConfig.Test;
 	private static readonly Color Muted = new("d9b99b");
 	private static readonly Color Bright = new("fff3e0");
+	private static readonly Color GlassTint = new(0.8f, 0.92f, 1f);
 
 	private readonly Random _random = new();
 	private GameSettings _settings = null!;
@@ -41,9 +43,7 @@ public partial class Main : Node3D
 
 	private readonly Dictionary<Card, Card3D> _nodes = new();
 	private readonly CardFan[] _fans = new CardFan[2];
-	private readonly GlassHand[] _holders = new GlassHand[2];
-	private readonly GlassHand[] _helpers = new GlassHand[2];
-	private readonly Transform3D[] _helperRest = new Transform3D[2];
+	private readonly SeatHands[] _hands = new SeatHands[2];
 	private readonly List<Card3D>[] _books = { new(), new() };
 	private Label3D _bubble = null!;
 	private Flames? _fire;
@@ -58,7 +58,7 @@ public partial class Main : Node3D
 	private bool _demo;
 	private bool _quitAfterDemo;
 	private string? _art;
-	private bool _hands;
+	private bool _handCheck;
 
 	public override void _Ready()
 	{
@@ -71,13 +71,13 @@ public partial class Main : Node3D
 			_ = ArtCheck.Run(this, _art);
 			return;
 		}
-		if (_hands)
+		if (_handCheck)
 		{
 			_ = ShowHands();
 			return;
 		}
 		AudioServer.SetBusMute(0, _settings.Muted);
-		_ = Start();
+		Run(Start());
 	}
 
 	private async Task ShowHands() => HandCheck.Build(this, await CardLooks.Create(this, CardFront.Classic, CardBack.Crimson));
@@ -94,7 +94,8 @@ public partial class Main : Node3D
 
 		_fans[0] = new CardFan(_table.FanPivot[0], sorted: true);
 		_fans[1] = new CardFan(_table.FanPivot[1], sorted: false) { Radius = 0.5f, Spread = 9f, MaxArc = 80f };
-		BuildHands();
+		for (int p = 0; p < 2; p++)
+			_hands[p] = new SeatHands(this, _sounds, _table.FanPivot[p], GlassTint);
 		_bubble = new Label3D
 		{
 			FontSize = 96,
@@ -131,13 +132,21 @@ public partial class Main : Node3D
 			"Once Go Fish is on Google Play, this opens your phone's share menu with a link to the game, so a friend can get it and play you.",
 			("OK", true, null));
 
-		// Pairs (what most families play) or books of four (the rule-book version); from the next deal.
-		_hud.AddChoice("Lay down", new[] { "Pairs", "Books of four" }, SetSize == 4 ? 1 : 0, choice =>
+		// Books of four (the standard rules) or pairs (a popular family version); from the next deal.
+		_hud.AddChoice("Lay down", new[] { "Books of four", "Pairs" }, SetSize == 2 ? 1 : 0, choice =>
 		{
-			_settings.Extra["sets"] = choice == 1 ? "books" : "pairs";
+			_settings.Extra["sets"] = choice == 1 ? "pairs" : "books";
 			_settings.Save();
 			if (_game == null || _game.BooksMade == 0)
-				_ = NewRound();
+				Run(NewRound());
+		});
+		// Draw for me after "Go fish!" (or wait for my tap): a way to set the pace.
+		_hud.AddToggle("Fish automatically", AutoFish, on =>
+		{
+			_settings.Extra["autofish"] = on ? "on" : "off";
+			_settings.Save();
+			if (on && !_busy && _game is { Current: 0, Phase: Phase.Fishing })
+				Run(Play(_game.Fish(0)));
 		});
 
 		_styleMenu = new CardStyleMenu(theme, _looks.Back, _looks.Front);
@@ -150,8 +159,10 @@ public partial class Main : Node3D
 		await NewRound();
 	}
 
-	/// <summary>2 to play with pairs (the default), 4 for books of four (chosen in Settings).</summary>
-	private int SetSize => _settings.Extra.TryGetValue("sets", out var sets) && sets == "books" ? 4 : 2;
+	/// <summary>4 for books of four (the standard), 2 to play with pairs (chosen in Settings).</summary>
+	private int SetSize => _settings.Extra.TryGetValue("sets", out var sets) && sets == "pairs" ? 2 : 4;
+
+	private bool AutoFish => _settings.Extra.TryGetValue("autofish", out var on) && on == "on";
 
 	private T Saved<T>(string key, T fallback) where T : struct, Enum =>
 		_settings.Extra.TryGetValue(key, out var text) && Enum.TryParse<T>(text, out var value) ? value : fallback;
@@ -162,68 +173,48 @@ public partial class Main : Node3D
 		_settings.Save();
 	}
 
-	// ------------------------------------------------------------------ Hands
+	private async Task Await(Tween tween) => await ToSignal(tween, Tween.SignalName.Finished);
 
-	private void BuildHands()
+	/// <summary>Runs a task without waiting for it, but reports anything that goes wrong (otherwise it would vanish).</summary>
+	private static async void Run(Task task)
 	{
-		var tint = new Color(0.8f, 0.92f, 1f);
-		for (int p = 0; p < 2; p++)
+		try
 		{
-			// The left hand holds the fan from behind, thumb across the front at its base.
-			_holders[p] = new GlassHand(mirrored: false, tint) { Grip = 0.85f };
-			AddChild(_holders[p]);
-			_holders[p].GlobalTransform = HolderPose(p);
-			// The right hand does the work: picking up, handing over, fishing.
-			_helpers[p] = new GlassHand(mirrored: true, tint) { Grip = 0.35f };
-			AddChild(_helpers[p]);
-			var pivot = _table.FanPivot[p];
-			var rest = pivot.Origin + pivot.Basis * new Vector3(p == 0 ? 1.4f : -1.3f, p == 0 ? -0.6f : -0.35f, 0.05f);
-			_helperRest[p] = new Transform3D(pivot.Basis * new Basis(Vector3.Back, p == 0 ? 0.35f : -0.35f), rest);
-			_helpers[p].GlobalTransform = _helperRest[p];
+			await task;
+		}
+		catch (Exception error)
+		{
+			GD.PrintErr($"Go Fish: {error}");
+			DevLog.Write($"error: {error.Message}");
 		}
 	}
 
-	private Transform3D HolderPose(int p)
-	{
-		var pivot = _table.FanPivot[p];
-		// Behind the lower left of the fan, fingers reaching up and right behind the cards, the
-		// palm and thumb showing below and across the base where the cards are pinched.
-		var basis = pivot.Basis * new Basis(Vector3.Back, -0.45f) * new Basis(Vector3.Right, -0.2f);
-		return new Transform3D(basis, pivot.Origin + pivot.Basis * new Vector3(-0.3f, 0.05f, -0.07f));
-	}
+	// ------------------------------------------------------------------ Moving cards with the hands
 
-	/// <summary>The helper hand reaches to a point (palm towards the card) and back again.</summary>
-	private async Task Reach(int p, Vector3 at, float seconds = 0.22f)
+	/// <summary>A player's working hand picks cards up from wherever they are and puts them into their fan.</summary>
+	private async Task IntoFan(int p, IReadOnlyList<Card3D> cards)
 	{
-		var toward = new Transform3D(_helperRest[p].Basis, at + _helperRest[p].Basis * new Vector3(0, -0.32f, 0.05f));
-		await ToSignal(CardMotion.Fly(_helpers[p], toward, seconds, lift: 0.1f), Tween.SignalName.Finished);
-	}
-
-	private Tween Rest(int p, float seconds = 0.3f) => CardMotion.Fly(_helpers[p], _helperRest[p], seconds, lift: 0.1f);
-
-	/// <summary>Flies cards (carried by a hand) into a player's fan, then settles both fans.</summary>
-	private async Task IntoFan(IReadOnlyList<Card3D> cards, int to, int carrier, float seconds = 0.45f)
-	{
-		Tween? last = null;
-		for (int i = 0; i < cards.Count; i++)
+		var targets = new List<Transform3D>();
+		foreach (var node in cards)
 		{
-			var node = cards[i];
 			foreach (var fan in _fans)
 				fan.Remove(node);
-			var slot = _fans[to].SlotFor(node);
-			_fans[to].Add(node);
-			last = CardMotion.Fly(node, slot, seconds, lift: 0.35f, delay: i * 0.06f, landed: () => _sounds.PlaySlap(node.GlobalPosition));
+			_fans[p].Add(node);
 		}
-		var handTarget = new Transform3D(_helperRest[carrier].Basis, _fans[to].Pivot.Origin + _fans[to].Pivot.Basis * new Vector3(0, 0.2f, 0.08f));
-		CardMotion.Fly(_helpers[carrier], handTarget, seconds, lift: 0.35f);
-		_sounds.PlaySwish(cards[0].GlobalPosition);
-		if (last != null)
-			await ToSignal(last, Tween.SignalName.Finished);
-		Rest(carrier);
-		_fans[0].Settle();
-		var settle = _fans[1].Settle();
+		foreach (var node in cards)
+			targets.Add(_fans[p].Slot(_fans[p].Cards.ToList().IndexOf(node), _fans[p].Count));
+		await _hands[p].Carry(cards, targets);
+		var settle = _fans[p].Settle();
 		if (settle != null)
-			await ToSignal(settle, Tween.SignalName.Finished);
+			await Await(settle);
+	}
+
+	/// <summary>Where cards thrown to a player land: on the felt in front of them, to one side.</summary>
+	private Transform3D Landing(int to, int i)
+	{
+		var at = to == 0 ? new Vector3(-1.2f, CardTable.FeltY, 0.45f) : new Vector3(0.95f, CardTable.FeltY, -1.6f);
+		float yaw = ((float)_random.NextDouble() - 0.5f) * 0.6f;
+		return new Transform3D(Card3D.FaceUp(yaw), at + new Vector3(i * 0.12f, 0.004f * (i + 1), i * 0.04f));
 	}
 
 	// ------------------------------------------------------------------ A round
@@ -235,6 +226,8 @@ public partial class Main : Node3D
 		int round = _round;
 		_fire?.Extinguish();
 		_fire = null;
+		foreach (var hands in _hands)
+			hands.Reset();
 		foreach (var node in _nodes.Values)
 			node.QueueFree();
 		_nodes.Clear();
@@ -242,11 +235,12 @@ public partial class Main : Node3D
 			fan.Clear();
 		foreach (var books in _books)
 			books.Clear();
+		Say(null);
 		_hud.SetNewGameVisible(false);
 		_hud.SetRestartVisible(false);
 		SetScore();
 
-		// A fresh deck, face down in the middle: shuffle it for real (on screen, a riffle).
+		// A fresh deck, face down in the middle: shuffle it for real (on screen, riffles and a bridge).
 		var order = Deck.Shuffled(_random);
 		var deck = new List<Card3D>();
 		for (int i = 0; i < 52; i++)
@@ -254,16 +248,15 @@ public partial class Main : Node3D
 			var node = new Card3D(order[51 - i], _looks);
 			AddChild(node);
 			deck.Add(node);
-			_nodes[node.Card] = node;
 		}
 		Dealer.Stack(deck, _table.Centre);
 		_hud.SetStatus("Shuffling…", Muted);
-		await ToSignal(GetTree().CreateTimer(0.4f), SceneTreeTimer.SignalName.Timeout);
+		await Pause(0.4f);
 		await _dealer.Riffle(deck, _table.Centre, times: 2);
 		if (round != _round)
 			return;
 
-		// The riffle moved the card objects around; give them the shuffled order again, top first.
+		// The shuffle moved the card objects around; give them the shuffled order, top first.
 		_nodes.Clear();
 		for (int i = 0; i < 52; i++)
 		{
@@ -274,7 +267,8 @@ public partial class Main : Node3D
 		_ai = new GoFishAi(1, _settings.Difficulty, _random);
 		_autopilot = _demo ? new GoFishAi(0, Difficulty.Medium, _random) : null;
 
-		// Deal seven each, one at a time, starting with the first player.
+		// Deal seven each, one at a time, starting with the first player. The rest stays face down
+		// in the middle: the deck players fish from.
 		_hud.SetStatus("Dealing…", Muted);
 		var onPile = new int[2];
 		Tween? last = null;
@@ -283,20 +277,13 @@ public partial class Main : Node3D
 			int p = (_first + j) % 2;
 			last = _dealer.Deal(_nodes[_game.Dealt[j]], _table.Pile[p], onPile[p]++, delay: j * 0.13f);
 		}
-		await ToSignal(last!, Tween.SignalName.Finished);
-
-		// The rest is spread face down as the pond.
-		for (int i = 0; i < _game.Pond.Count; i++)
-			last = CardMotion.Slide(_nodes[_game.Pond[i]], _dealer.Scatter(_table.Centre + new Vector3(0, 0, 0.05f), 1.05f, 0.5f, i), 0.32f, delay: i * 0.018f,
-				landed: i % 6 == 0 ? () => _sounds.PlayFlick(_table.Centre) : null);
-		await ToSignal(last!, Tween.SignalName.Finished);
+		await Await(last!);
 
 		// Each player picks up their cards and fans them.
 		for (int p = 0; p < 2; p++)
 		{
-			await Reach(p, _table.Pile[p], 0.25f);
-			var mine = _game.Hand(p).Select(c => _nodes[c]).ToList();
-			await IntoFan(mine, p, carrier: p, seconds: 0.4f);
+			var pile = _game.Hand(p).Select(c => _nodes[c]).OrderByDescending(n => n.GlobalPosition.Y).ToList();
+			await IntoFan(p, pile);
 		}
 		if (round != _round)
 			return;
@@ -324,13 +311,20 @@ public partial class Main : Node3D
 			return;
 		if (game.Current == 0 && _autopilot == null)
 		{
+			if (game.Phase == Phase.Fishing && AutoFish)
+			{
+				await Pause(0.5f);
+				if (round == _round)
+					await Play(game.Fish(0));
+				return;
+			}
 			_busy = false;
-			_hud.SetStatus(game.Phase == Phase.Fishing ? $"Go fish! Tap the pond for a {Card.RankName(game.FishingFor).ToLowerInvariant()}." : "Your turn: tap a card to ask for it.", Bright);
+			_hud.SetStatus(game.Phase == Phase.Fishing ? $"Go fish! Tap the deck for a {Card.RankName(game.FishingFor).ToLowerInvariant()}." : "Your turn: tap a card to ask for it.", Bright);
 			return;
 		}
 		// The computer (or, in the demo, both sides) takes its turn after a short think.
 		var ai = game.Current == 0 ? _autopilot! : _ai!;
-		await ToSignal(GetTree().CreateTimer(game.Phase == Phase.Fishing ? 0.5f : 0.9f), SceneTreeTimer.SignalName.Timeout);
+		await Pause(game.Phase == Phase.Fishing ? 0.5f : 0.9f);
 		if (round != _round)
 			return;
 		var next = game.Phase == Phase.Fishing ? game.Fish(ai.ChoosePondCard(game)) : game.Ask(ai.ChooseRank(game));
@@ -339,38 +333,42 @@ public partial class Main : Node3D
 
 	private async Task Show(GoFishEvent e)
 	{
-		var game = _game!;
 		switch (e)
 		{
 			case Asked asked:
 			{
-				string ranks = Card.RankName(asked.Rank, plural: true);
+				string ranks = Card.RankName(asked.Rank, plural: true).ToLowerInvariant();
 				if (asked.Player == 0)
 				{
 					_fans[0].Raise(asked.Rank, true);
 					_fans[0].Settle(0.15f);
-					_hud.SetStatus($"You: \"Got any {ranks.ToLowerInvariant()}?\"", Bright);
+					_hud.SetStatus($"You: \"Got any {ranks}?\"", Bright);
 				}
 				else
 				{
-					Say($"Got any {ranks.ToLowerInvariant()}?");
-					_hud.SetStatus($"The computer asks for your {ranks.ToLowerInvariant()}.", Muted);
+					Say($"Got any {ranks}?");
+					_hud.SetStatus($"The computer asks for your {ranks}.", Muted);
 				}
 				await Pause(0.9f);
 				break;
 			}
 			case Gave gave:
 			{
+				// The one who has them throws them down on the felt; the one who asked picks them up.
 				var nodes = gave.Cards.Select(c => _nodes[c]).ToList();
+				foreach (var node in nodes)
+					_fans[gave.From].Remove(node);
 				_fans[gave.From].LowerAll();
-				await Reach(gave.From, nodes[0].GlobalPosition);
-				await IntoFan(nodes, gave.To, carrier: gave.From);
+				_fans[gave.From].Settle();
+				await _hands[gave.From].Throw(nodes, nodes.Select((_, i) => Landing(gave.To, i)).ToList());
+				await Pause(0.25f);
+				await IntoFan(gave.To, nodes);
 				string what = $"{Count(nodes.Count)} {Card.RankName(gave.Cards[0].Rank, nodes.Count > 1).ToLowerInvariant()}";
-				_hud.SetStatus(gave.To == 0 ? $"You got {what}! Ask again." : $"You hand over {what}.", Bright);
+				_hud.SetStatus(gave.To == 0 ? $"You got {what}! Ask again." : $"You give up {what}.", Bright);
 				_fans[0].LowerAll();
 				_fans[0].Settle(0.15f);
 				Say(null);
-				await Pause(0.6f);
+				await Pause(0.5f);
 				break;
 			}
 			case GoFishTold told:
@@ -389,9 +387,7 @@ public partial class Main : Node3D
 				break;
 			case Drew drew:
 			{
-				var node = _nodes[drew.Card];
-				await Reach(drew.Player, node.GlobalPosition);
-				await IntoFan(new[] { node }, drew.Player, carrier: drew.Player, seconds: 0.4f);
+				await IntoFan(drew.Player, new[] { _nodes[drew.Card] });
 				if (drew.Lucky)
 				{
 					string rank = Card.RankName(drew.Card.Rank).ToLowerInvariant();
@@ -429,23 +425,21 @@ public partial class Main : Node3D
 			? _table.Winnings[book.Player] + new Vector3(side * (k % 3) * 0.36f, 0, side * (k / 3) * -0.42f)
 			: _table.Winnings[book.Player] + new Vector3(side * (k % 3) * 0.05f, 0, side * (k % 2) * -0.04f);
 		float yaw = game.SetSize == 4 ? side * 0.1f : side * 0.1f + ((float)_random.NextDouble() - 0.5f) * 0.3f;
-		Tween? last = null;
+		var targets = new List<Transform3D>();
 		for (int i = 0; i < nodes.Count; i++)
 		{
-			var node = nodes[i];
-			_fans[book.Player].Remove(node);
-			var target = new Transform3D(Card3D.FaceUp(yaw), at + new Vector3(i * (game.SetSize == 4 ? 0.05f : 0.16f) * side, 0.004f * (i + 1) + 0.0085f * k, 0));
-			last = CardMotion.Fly(node, target, 0.45f, lift: 0.4f, delay: i * 0.07f, landed: () => _sounds.PlaySlap(node.GlobalPosition));
-			_books[book.Player].Add(node);
+			_fans[book.Player].Remove(nodes[i]);
+			targets.Add(new Transform3D(Card3D.FaceUp(yaw), at + new Vector3(i * (game.SetSize == 4 ? 0.05f : 0.16f) * side, 0.004f * (i + 1) + 0.0085f * k, 0)));
+			_books[book.Player].Add(nodes[i]);
 		}
-		await ToSignal(last!, Tween.SignalName.Finished);
-		Sparkle.Burst(this, at + Vector3.Up * 0.2f);
 		_fans[book.Player].Settle();
+		await _hands[book.Player].Carry(nodes, targets, seconds: 0.4f, lift: 0.35f);
+		Sparkle.Burst(this, at + Vector3.Up * 0.2f);
 		string ranks = Card.RankName(book.Rank, plural: true).ToLowerInvariant();
 		string set = game.SetSize == 4 ? "book" : "pair";
 		_hud.SetStatus(book.Player == 0 ? $"A {set} of {ranks}!" : $"The computer lays down a {set} of {ranks}.", Bright);
 		SetScore();
-		await Pause(0.8f);
+		await Pause(0.7f);
 	}
 
 	private void Finish(GameOver over)
@@ -485,6 +479,8 @@ public partial class Main : Node3D
 
 	private void Say(string? text)
 	{
+		if (_bubble == null)
+			return;
 		_bubble.Visible = text != null;
 		_bubble.Text = text ?? "";
 	}
@@ -517,23 +513,13 @@ public partial class Main : Node3D
 			if (card == null)
 				return;
 			_hud.HideHint();
-			_ = Play(game.Ask(card.Card.Rank));
+			Run(Play(game.Ask(card.Card.Rank)));
 		}
 		else if (game.Phase == Phase.Fishing)
 		{
-			// Any card in the pond: the frontmost one under the tap.
-			Card3D? best = null;
-			float bestDistance = float.MaxValue;
-			foreach (var c in game.Pond)
-				if (_nodes[c].Hit(origin, direction) is { } d && d < bestDistance)
-				{
-					best = _nodes[c];
-					bestDistance = d;
-				}
-			if (best == null)
-				return;
-			int index = game.Pond.ToList().IndexOf(best.Card);
-			_ = Play(game.Fish(index));
+			// A tap anywhere on the deck draws its top card.
+			if (game.Pond.Any(c => _nodes[c].Hit(origin, direction) != null))
+				Run(Play(game.Fish(0)));
 		}
 	}
 
@@ -549,7 +535,7 @@ public partial class Main : Node3D
 		}
 		else
 		{
-			_ = NewRound();
+			Run(NewRound());
 		}
 	}
 
@@ -558,21 +544,22 @@ public partial class Main : Node3D
 	{
 		if (_game == null || _game.IsOver)
 		{
-			_ = NewRound();
+			Run(NewRound());
 			return;
 		}
 		_hud.AskRestart(!_demo, countLoss =>
 		{
 			if (countLoss)
 				_wins.Win(first: false);
-			_ = NewRound();
+			Run(NewRound());
 		}, then => _ads.ShowRewarded(rewarded: then, closed: () => { }));
 	}
 
 	/// <summary>
 	/// Developer flags after `--` (or in user://dev_args.txt on a phone): `--log`, `--demo` (the
 	/// computer plays both sides), `--quit-after-demo`, `--games-since-ad=4`, `--art=user://art`
-	/// (paints every card design to PNGs and quits), plus the HUD's `--tutorial=N` and `--settings`.
+	/// (paints every card design to PNGs and quits), `--hands` (the glass hands up close), plus the
+	/// HUD's `--tutorial=N` and `--settings`.
 	/// </summary>
 	private void ReadDeveloperArgs()
 	{
@@ -597,7 +584,7 @@ public partial class Main : Node3D
 					_art = value;
 					break;
 				case "--hands":
-					_hands = true;
+					_handCheck = true;
 					break;
 			}
 		}

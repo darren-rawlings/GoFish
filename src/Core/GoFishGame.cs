@@ -32,7 +32,7 @@ public sealed record GameOver(int[] Books) : GoFishEvent;
 public enum Phase { Asking, Fishing, Over }
 
 /// <summary>
-/// Go Fish for two players: seven cards each, the rest spread face down as the pond. Players lay
+/// Go Fish for two players: seven cards each, the rest left face down as the stock (the "pond"; index 0 is the top). Players lay
 /// down sets as soon as they have them: pairs (the version most families play, and the default)
 /// or books of four (the classic rule-book version). On your turn, ask for a rank you hold. If the
 /// other player has any, they give you all of them and you ask again. If not, "Go fish!": draw
@@ -55,7 +55,7 @@ public sealed class GoFishGame
 	/// Deals a game from a deck (top card first); the deal alternates, starting with the first
 	/// player. Call <see cref="Opening"/> next, to lay down any sets that were dealt.
 	/// </summary>
-	public GoFishGame(IReadOnlyList<Card> deck, int first = 0, int setSize = 2)
+	public GoFishGame(IReadOnlyList<Card> deck, int first = 0, int setSize = 4)
 	{
 		if (deck.Count != 52 || deck.Distinct().Count() != 52)
 			throw new ArgumentException("Go Fish needs a full deck.", nameof(deck));
@@ -69,7 +69,7 @@ public sealed class GoFishGame
 		Current = first;
 	}
 
-	public GoFishGame(Random random, int first = 0, int setSize = 2) : this(Deck.Shuffled(random), first, setSize) { }
+	public GoFishGame(Random random, int first = 0, int setSize = 4) : this(Deck.Shuffled(random), first, setSize) { }
 
 	/// <summary>2 for pairs, 4 for books.</summary>
 	public int SetSize { get; }
@@ -194,10 +194,11 @@ public sealed class GoFishGame
 		{
 			if (_pond.Count > 0)
 			{
-				var card = _pond[^1];
-				_pond.RemoveAt(_pond.Count - 1);
+				// The top of the stock.
+				var card = _pond[0];
+				_pond.RemoveAt(0);
 				_hands[player].Add(card);
-				events.Add(new Drew(player, card, _pond.Count, Lucky: false));
+				events.Add(new Drew(player, card, 0, Lucky: false));
 				MakeBooks(player, events);
 				if (_hands[player].Count == 0)
 				{
