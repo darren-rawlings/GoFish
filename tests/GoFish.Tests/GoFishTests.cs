@@ -250,3 +250,71 @@ public class GoFishTests
 		Assert.True(hardWins > decided * 0.53, $"Hard won {hardWins} of {decided}");
 	}
 }
+
+public class GoFishGroupTests
+{
+	[Theory]
+	[InlineData(3, 7)]
+	[InlineData(4, 5)]
+	[InlineData(5, 5)]
+	public void BiggerTablesDealSevenOrFiveEach(int players, int each)
+	{
+		var game = new GoFishGame(new Random(1), players: players);
+		Assert.All(Enumerable.Range(0, players), p => Assert.Equal(each, game.Hand(p).Count));
+		Assert.Equal(52 - players * each, game.Pond.Count);
+	}
+
+	[Fact]
+	public void YouAskAParticularPlayerAndTheTurnGoesLeft()
+	{
+		// Three players, dealt round: player 0 gets cards 0, 3, 6...; player 2 gets 2, 5, 8...
+		var deck = Deck.Standard();
+		var game = new GoFishGame(deck, players: 3);
+		game.Opening();
+		var rank = game.Hand(0)[0].Rank;
+		Assert.Throws<ArgumentOutOfRangeException>(() => game.Ask(0, rank));
+		var events = game.Ask(2, rank);
+		var asked = Assert.IsType<Asked>(events[0]);
+		Assert.Equal(2, asked.Target);
+		if (events.OfType<GoFishTold>().Any())
+		{
+			game.Fish();
+			Assert.Contains(game.Current, new[] { 0, 1 });
+		}
+	}
+
+	[Theory]
+	[InlineData(3, 1)]
+	[InlineData(4, 2)]
+	[InlineData(5, 3)]
+	[InlineData(5, 4)]
+	public void WholeGroupGamesEndWithEveryCardInABook(int players, int seed)
+	{
+		var random = new Random(seed);
+		var game = new GoFishGame(random, players: players);
+		var ais = Enumerable.Range(0, players).Select(p => new GoFishAi(p, (Difficulty)(p % 3), random)).ToArray();
+		var opening = game.Opening();
+		foreach (var ai in ais)
+			ai.Watch(opening);
+		int moves = 0;
+		while (!game.IsOver && moves++ < 3000)
+		{
+			var ai = ais[game.Current];
+			List<GoFishEvent> events;
+			if (game.Phase == Phase.Fishing)
+				events = game.Fish();
+			else
+			{
+				var (target, rank) = ai.ChooseAsk(game);
+				events = game.Ask(target, rank);
+			}
+			foreach (var watcher in ais)
+				watcher.Watch(events);
+			int cards = Enumerable.Range(0, players).Sum(p => game.Hand(p).Count) + game.Pond.Count + game.BooksMade * 4;
+			Assert.Equal(52, cards);
+		}
+		Assert.True(game.IsOver);
+		Assert.Equal(13, game.BooksMade);
+		Assert.NotEmpty(game.Leaders);
+	}
+}
