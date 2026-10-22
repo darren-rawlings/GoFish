@@ -12,12 +12,12 @@ public static class Tutorial
 	public static readonly IReadOnlyList<TutorialPage> Pages = new[]
 	{
 		new TutorialPage("Ask for a card",
-			"Pairs you're dealt go straight down. On your turn, tap a card in your hand to ask the computer for that rank: \"Got any sevens?\" If it has one, it hands it over, your pair goes down, and you go again."),
+			"On your turn, tap a card in your hand to ask for that rank: \"Got any sevens?\" With more than one opponent, then tap whom to ask. If they have any, they throw them all down for you, and you go again."),
 		new TutorialPage("Go fish!",
-			"If it has none, it says \"Go fish!\" Tap a card in the pond in the middle to draw it. Fish the rank you asked for and you go again; otherwise it's the computer's turn."),
-		new TutorialPage("Lay down pairs",
-			"Every pair you make is laid down in front of you. When every card is in a pair, whoever has the most pairs wins. Prefer books of four? Choose them in Settings."),
+			"If they have none, they say \"Go fish!\" Tap the deck in the middle to draw its top card. Fish the rank you asked for and you go again; otherwise the turn passes to your left. (Settings › Fish automatically draws for you.)"),
+		new TutorialPage("Make books",
+			"Four of a kind make a book, laid down in front of you. When every card is in a book, whoever has the most wins. Prefer pairs? Choose them in Settings."),
 		new TutorialPage("Tips",
-			"The computer remembers what you ask for on Hard, so think before you ask. Change the card backs and fronts in Style: every front has its own suits and face cards."),
+			"Play with up to four computer players in Settings › Players. On Hard they remember what everyone asks for, so think before you ask. Change the card backs and fronts in Style: every front has its own suits and face cards."),
 	};
 }

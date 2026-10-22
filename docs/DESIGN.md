@@ -5,10 +5,11 @@ The first of Renegade Games' card games, and the one that proves the card kit
 and the glass hands feel right, every later card game is mostly its rules and its scoring.
 
 ## The game
-Go Fish for two: you and the computer, seven cards each, the rest spread face down as the pond.
+Go Fish for 2 to 5 (you and up to four computer players): seven cards each for two or three
+players, five each for four or five (the Bicycle rules); the rest is left face down as the stock.
 On your turn, ask for a rank you hold ("Got any sevens?"). If the other player has any, they hand
 them all over and you ask again. If not, "Go fish!": draw from the pond; fish the rank you asked
-for and you go again, otherwise the turn passes. Four of a kind make a book, laid down in front of
+for and you go again, otherwise the turn passes. Four of a kind make a book (the standard; pairs are an option in Settings), laid down in front of
 you. A player with no cards draws one at the start of their turn (or sits out once the pond is
 empty). When all 13 books are made, the most books wins (13 is odd, so there are no ties).
 Rules live in `src/Core/GoFishGame.cs` (tested), which reports each step as an event the table
