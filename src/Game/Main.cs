@@ -125,7 +125,11 @@ public partial class Main : CardGame
 		}
 		SetScore();
 		if (game.IsOver)
+		{
+			ShowTurn(-1);
 			return;
+		}
+		ShowTurn(game.Current);
 		var mover = _ais[game.Current];
 		if (game.Current == 0 && mover == null)
 		{
@@ -138,7 +142,7 @@ public partial class Main : CardGame
 			}
 			Busy = false;
 			_selectedRank = 0;
-			Hud.SetStatus(game.Phase == Phase.Fishing ? $"Go fish! Tap the deck for a {Card.RankName(game.FishingFor).ToLowerInvariant()}." : "Your turn: tap a card to ask for it.", Bright);
+			Hud.SetStatus(game.Phase == Phase.Fishing ? $"Go fish! Tap the deck for {(game.FishingFor is Card.Ace or 8 ? "an" : "a")} {Card.RankName(game.FishingFor).ToLowerInvariant()}." : "Your turn: tap a card to ask for it.", Bright);
 			return;
 		}
 		// A computer player (or, in the demo, you) takes its turn after a short think.
@@ -173,8 +177,6 @@ public partial class Main : CardGame
 					Fans[0].Settle(0.15f);
 				}
 				Say(asked.Player, question, asked.Target);
-				Hud.SetStatus(asked.Player == 0 ? $"You ask {Names[asked.Target]} for {ranks}."
-					: asked.Target == 0 ? $"{Names[asked.Player]} asks you for your {ranks}." : $"{Names[asked.Player]} asks {Names[asked.Target]} for {ranks}.", Muted);
 				await Pause(1.1f);
 				break;
 			}
@@ -191,8 +193,6 @@ public partial class Main : CardGame
 				await Hands[gave.From].Throw(nodes, nodes.Select((_, i) => Landing(gave.To, i)).ToList());
 				await Pause(0.25f);
 				await IntoFan(gave.To, nodes);
-				Hud.SetStatus(gave.To == 0 ? $"You got {what}! Ask again."
-					: gave.From == 0 ? $"You give up {what}." : $"{Names[gave.From]} gives {Names[gave.To]} {what}.", Bright);
 				Fans[0].LowerAll();
 				Fans[0].Settle(0.15f);
 				await Pause(0.5f);
@@ -213,8 +213,7 @@ public partial class Main : CardGame
 				if (drew.Lucky)
 				{
 					string rank = Card.RankName(drew.Card.Rank).ToLowerInvariant();
-					Say(drew.Player, $"Lucky! I fished a {rank}.");
-					Hud.SetStatus(drew.Player == 0 ? $"Lucky! You fished a {rank}. Go again." : $"{Names[drew.Player]} fished the {rank} they wanted, and goes again.", Bright);
+					Say(drew.Player, $"Lucky! I fished {(rank[0] is 'a' or 'e' ? "an" : "a")} {rank}.");
 					await Pause(0.8f);
 				}
 				break;
@@ -224,6 +223,7 @@ public partial class Main : CardGame
 				break;
 			case TurnTo turn:
 				SayNone();
+				ShowTurn(turn.Player);
 				for (int s = 0; s < Players; s++)
 					Fans[s].LowerAll();
 				if (turn.Player != 0)
@@ -261,7 +261,6 @@ public partial class Main : CardGame
 		string ranks = Card.RankName(book.Rank, plural: true).ToLowerInvariant();
 		string set = game.SetSize == 4 ? "book" : "pair";
 		News($"{NameOf(p)} {(p == 0 ? "lay" : "lays")} down a {set} of {ranks}.");
-		Hud.SetStatus(p == 0 ? $"A {set} of {ranks}!" : $"{Names[p]} lays down a {set} of {ranks}.", Bright);
 		SetScore();
 		await Pause(0.7f);
 	}
