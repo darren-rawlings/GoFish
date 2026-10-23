@@ -241,11 +241,12 @@ public partial class Main : CardGame
 		var game = _game!;
 		int p = book.Player;
 		int k = _books[p].Count / game.SetSize; // sets laid so far
-		// Your books of four: a little grid, three across. Pairs, and everyone else's books: one
-		// loose pile that grows, each set a touch askew, the newest on top.
+		// Your books of four: a little grid beside your place setting, two across (three would run off
+		// the screen). Pairs, and everyone else's books: one loose pile that grows, each set a touch
+		// askew, the newest on top.
 		bool grid = p == 0 && game.SetSize == 4;
 		var at = grid
-			? Table.Winnings[0] + new Vector3((k % 3) * 0.36f, 0, (k / 3) * -0.42f)
+			? Table.Winnings[0] + new Vector3((k % 2) * 0.36f, 0, (k / 2) * -0.3f)
 			: Table.Winnings[p] + new Vector3((k % 3) * 0.04f, 0, (k % 2) * -0.035f);
 		float yaw = (p == 0 ? 0.1f : 0.6f * p) + (grid ? 0 : ((float)Random.NextDouble() - 0.5f) * 0.3f);
 		var targets = new List<Transform3D>();
