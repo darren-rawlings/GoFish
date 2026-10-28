@@ -162,6 +162,7 @@ public partial class Main : CardGame
 
 	private async Task Show(GoFishEvent e)
 	{
+		ClipMoment("ask", 6);
 		var game = _game!;
 		switch (e)
 		{
@@ -237,6 +238,7 @@ public partial class Main : CardGame
 
 	private async Task LayBook(Book book)
 	{
+		ClipMoment("book", 5);
 		var nodes = book.Cards.Select(c => _nodes[c]).ToList();
 		var game = _game!;
 		int p = book.Player;
